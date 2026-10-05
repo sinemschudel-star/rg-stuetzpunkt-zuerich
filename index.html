@@ -85,10 +85,19 @@ if(!localStorage.getItem(K) && sponsors.length===0){
     type:'Sachspende',
     status:'Zugesagt',
     amount:0,
-    note:'Geschenke für die Athletinnen – sie machen mit.'
+    note:'Geschenke Rang 1 - 2 - 3 und Einzelgeräte'
   }];
   localStorage.setItem(K,JSON.stringify(sponsors));
 }
+// Aktualisiert den früheren Swarovski-Beispieltext auch bei bereits gespeicherten Daten.
+let swarovskiUpdated=false;
+for(const s of sponsors){
+  if(s.id==='swarovski-1' && s.note==='Geschenke für die Athletinnen – sie machen mit.'){
+    s.note='Geschenke Rang 1 - 2 - 3 und Einzelgeräte';
+    swarovskiUpdated=true;
+  }
+}
+if(swarovskiUpdated) localStorage.setItem(K,JSON.stringify(sponsors));
 let needs=JSON.parse(localStorage.getItem(NK)||'[]');
 const $=id=>document.getElementById(id);
 const chf=n=>'CHF '+Number(n||0).toLocaleString('de-CH');
