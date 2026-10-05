@@ -42,6 +42,8 @@ label{font-size:13px;font-weight:700} textarea{min-height:76px}
     <button class="primary" onclick="showForm()">+ Sponsor erfassen</button>
     <button class="secondary" onclick="showNeeds()">Wir suchen</button>
     <button class="secondary" onclick="showSponsors()">Sponsoren</button>
+    <button class="secondary" onclick="printSponsors()">📄 Liste drucken</button>
+    <button class="secondary" onclick="exportExcel()">📊 Excel herunterladen</button>
   </div>
 
   <section id="formSec" class="card hidden">
@@ -126,6 +128,83 @@ function render(){
 function addNeed(){if(!$('needName').value.trim())return alert('Bitte Bedarf eintragen.');needs.unshift({id:Date.now().toString(),name:$('needName').value.trim(),value:Number($('needValue').value||0),owner:$('needOwner').value.trim(),done:false});$('needName').value='';$('needValue').value='';$('needOwner').value='';persist();renderNeeds();}
 function toggleNeed(id){const x=needs.find(n=>n.id===id);x.done=!x.done;persist();renderNeeds();}
 function renderNeeds(){$('needs').innerHTML=needs.map(n=>`<div class="card sponsor"><div class="top"><div><h2>${esc(n.name)}</h2><div class="muted">${n.owner?'👤 '+esc(n.owner):'Noch nicht übernommen'} · ${chf(n.value)}</div></div><span class="badge">${n.done?'Sponsor gefunden':'Offen'}</span></div><button class="secondary" onclick="toggleNeed('${n.id}')">${n.done?'Wieder öffnen':'Als gefunden markieren'}</button></div>`).join('');}
+
+function sponsorTotals(){
+  return {
+    pledged:sponsors.filter(x=>['Zugesagt','Erhalten'].includes(x.status)).reduce((a,x)=>a+Number(x.amount||0),0),
+    received:sponsors.filter(x=>x.status==='Erhalten').reduce((a,x)=>a+Number(x.amount||0),0),
+    goods:sponsors.filter(x=>x.type==='Sachspende'&&['Zugesagt','Erhalten'].includes(x.status)).length,
+    open:sponsors.filter(x=>['Angefragt','In Abklärung'].includes(x.status)).length
+  };
+}
+function printSponsors(){
+  const totals=sponsorTotals();
+  const rows=sponsors.map(x=>`<tr>
+    <td>${esc(x.company)}</td>
+    <td>${esc(x.owner)}</td>
+    <td>${esc(x.type)}</td>
+    <td>${esc(x.status)}</td>
+    <td>${chf(x.amount)}</td>
+    <td>${x.date?esc(x.date):''}</td>
+    <td>${esc(x.contact||'')}</td>
+    <td>${esc(x.note||'')}</td>
+  </tr>`).join('');
+  const w=window.open('','_blank');
+  if(!w) return alert('Bitte Pop-ups erlauben, damit die Druckansicht geöffnet werden kann.');
+  w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8">
+  <title>RG Stützpunkt Zürich – Sponsorenübersicht</title>
+  <style>
+  @page{size:A4 landscape;margin:12mm}
+  body{font-family:Arial,sans-serif;color:#152238;margin:0}
+  h1{font-size:22px;margin:0 0 4px} h2{font-size:15px;margin:0 0 16px;color:#607087}
+  table{width:100%;border-collapse:collapse;font-size:10px}
+  th,td{border:1px solid #cfd8e3;padding:6px;vertical-align:top;text-align:left}
+  th{background:#e7f1fb;color:#0755a5}
+  .totals{margin-top:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  .box{border:1px solid #cfd8e3;border-radius:8px;padding:8px}
+  .box b{display:block;color:#0755a5;font-size:14px}
+  </style></head><body>
+  <h1>RG Stützpunkt Zürich – Sponsorenübersicht</h1>
+  <h2>Zürich Cup 2027</h2>
+  <table><thead><tr>
+    <th>Sponsor</th><th>Verantwortlich</th><th>Art</th><th>Status</th>
+    <th>Betrag</th><th>Datum</th><th>Kontakt</th><th>Bemerkung</th>
+  </tr></thead><tbody>${rows||'<tr><td colspan="8">Noch keine Sponsoren erfasst.</td></tr>'}</tbody></table>
+  <div class="totals">
+    <div class="box"><b>${chf(totals.pledged)}</b>Zugesagt</div>
+    <div class="box"><b>${chf(totals.received)}</b>Erhalten</div>
+    <div class="box"><b>${totals.goods}</b>Sachspenden</div>
+    <div class="box"><b>${totals.open}</b>Offene Anfragen</div>
+  </div>
+  <script>window.onload=()=>window.print();<\/script>
+  </body></html>`);
+  w.document.close();
+}
+function exportExcel(){
+  const sep=';';
+  const headers=['Sponsor','Verantwortlich','Art','Status','Betrag CHF','Datum Anfrage','Kontaktperson','Bemerkung'];
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const lines=[headers.map(q).join(sep)];
+  sponsors.forEach(x=>lines.push([
+    x.company,x.owner,x.type,x.status,Number(x.amount||0),x.date||'',x.contact||'',x.note||''
+  ].map(q).join(sep)));
+  const totals=sponsorTotals();
+  lines.push('');
+  lines.push([q('Total zugesagt'),q(totals.pledged)].join(sep));
+  lines.push([q('Total erhalten'),q(totals.received)].join(sep));
+  lines.push([q('Sachspenden'),q(totals.goods)].join(sep));
+  lines.push([q('Offene Anfragen'),q(totals.open)].join(sep));
+  const blob=new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='RG_Stuetzpunkt_Zuerich_Sponsoren.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
 function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 stats();render();
 </script></body></html>
