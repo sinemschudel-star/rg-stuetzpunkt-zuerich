@@ -74,36 +74,75 @@ label{font-size:13px;font-weight:700} textarea{min-height:76px}
     <div id="list"></div>
   </section>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase-sync.js"></script>
 <script>
 const K='rg_sponsors_v1', NK='rg_needs_v1';
+const TABLE='sponsoren';
 let sponsors=JSON.parse(localStorage.getItem(K)||'[]');
-if(!localStorage.getItem(K) && sponsors.length===0){
-  sponsors=[{
-    id:'swarovski-1',
-    company:'Swarovski',
-    owner:'Sinem Schudel',
-    date:'',
-    contact:'',
-    type:'Sachspende',
-    status:'Zugesagt',
-    amount:0,
-    note:'Geschenke Rang 1 - 2 - 3 und Einzelgeräte'
-  }];
-  localStorage.setItem(K,JSON.stringify(sponsors));
-}
-// Aktualisiert den früheren Swarovski-Beispieltext auch bei bereits gespeicherten Daten.
-let swarovskiUpdated=false;
-for(const s of sponsors){
-  if(s.id==='swarovski-1' && s.note==='Geschenke für die Athletinnen – sie machen mit.'){
-    s.note='Geschenke Rang 1 - 2 - 3 und Einzelgeräte';
-    swarovskiUpdated=true;
-  }
-}
-if(swarovskiUpdated) localStorage.setItem(K,JSON.stringify(sponsors));
 let needs=JSON.parse(localStorage.getItem(NK)||'[]');
+let syncBusy=false;
 const $=id=>document.getElementById(id);
 const chf=n=>'CHF '+Number(n||0).toLocaleString('de-CH');
-function persist(){localStorage.setItem(K,JSON.stringify(sponsors));localStorage.setItem(NK,JSON.stringify(needs));}
+
+function cache(){
+  localStorage.setItem(K,JSON.stringify(sponsors));
+  localStorage.setItem(NK,JSON.stringify(needs));
+}
+function packDetails(note,date,contact){
+  return JSON.stringify({note:note||'',date:date||'',contact:contact||''});
+}
+function unpackDetails(value){
+  if(!value) return {note:'',date:'',contact:''};
+  try{
+    const x=JSON.parse(value);
+    if(x && typeof x==='object') return {note:x.note||'',date:x.date||'',contact:x.contact||''};
+  }catch(e){}
+  return {note:String(value),date:'',contact:''};
+}
+function rowToSponsor(r){
+  const d=unpackDetails(r.beschreibung);
+  return {id:String(r.id),company:r.sponsor||'',owner:r.verantwortlich||'',date:d.date,contact:d.contact,type:r.kategorie||'Geldsponsoring',status:r.status||'Idee',amount:Number(r.betrag||0),note:d.note};
+}
+function rowToNeed(r){
+  return {id:String(r.id),name:r.sponsor||'',value:Number(r.betrag||0),owner:r.verantwortlich||'',done:r.status==='Sponsor gefunden'};
+}
+async function loadSharedData(showError=false){
+  if(syncBusy) return;
+  syncBusy=true;
+  try{
+    const {data,error}=await supabase.from(TABLE).select('*').order('created_at',{ascending:false});
+    if(error) throw error;
+    const rows=data||[];
+    sponsors=rows.filter(r=>r.kategorie!=='Bedarf').map(rowToSponsor);
+    needs=rows.filter(r=>r.kategorie==='Bedarf').map(rowToNeed);
+    cache(); stats(); render(); renderNeeds();
+  }catch(e){
+    console.error('Supabase laden:',e);
+    if(showError) alert('Synchronisation konnte nicht geladen werden. Bitte Internetverbindung prüfen.');
+    stats(); render(); renderNeeds();
+  }finally{syncBusy=false;}
+}
+async function migrateLocalIfDatabaseEmpty(){
+  try{
+    const {count,error}=await supabase.from(TABLE).select('*',{count:'exact',head:true});
+    if(error) throw error;
+    if(Number(count||0)!==0) return;
+    const localSponsors=JSON.parse(localStorage.getItem(K)||'[]');
+    const localNeeds=JSON.parse(localStorage.getItem(NK)||'[]');
+    const rows=[];
+    for(const x of localSponsors){
+      rows.push({sponsor:x.company||'',verantwortlich:x.owner||'',kategorie:x.type||'Geldsponsoring',beschreibung:packDetails(x.note,x.date,x.contact),betrag:Number(x.amount||0),status:x.status||'Idee',erstellt_von:x.owner||''});
+    }
+    for(const n of localNeeds){
+      rows.push({sponsor:n.name||'',verantwortlich:n.owner||'',kategorie:'Bedarf',beschreibung:'',betrag:Number(n.value||0),status:n.done?'Sponsor gefunden':'Offen',erstellt_von:n.owner||''});
+    }
+    if(rows.length){
+      const {error:insertError}=await supabase.from(TABLE).insert(rows);
+      if(insertError) throw insertError;
+    }
+  }catch(e){console.error('Migration:',e);}
+}
 function stats(){
  $('sumPledged').textContent=chf(sponsors.filter(x=>['Zugesagt','Erhalten'].includes(x.status)).reduce((a,x)=>a+Number(x.amount||0),0));
  $('sumReceived').textContent=chf(sponsors.filter(x=>x.status==='Erhalten').reduce((a,x)=>a+Number(x.amount||0),0));
@@ -114,100 +153,63 @@ function showSponsors(){$('formSec').classList.add('hidden');$('needSec').classL
 function showForm(id=''){$('listSec').classList.add('hidden');$('needSec').classList.add('hidden');$('formSec').classList.remove('hidden'); clearForm(); if(id) editSponsor(id);}
 function showNeeds(){$('listSec').classList.add('hidden');$('formSec').classList.add('hidden');$('needSec').classList.remove('hidden');renderNeeds();}
 function clearForm(){['editId','company','owner','date','contact','amount','note'].forEach(i=>$(i).value='');$('type').value='Geldsponsoring';$('status').value='Idee';$('formTitle').textContent='Neuen Sponsor erfassen';}
-function saveSponsor(){
+async function saveSponsor(){
  if(!$('company').value.trim()||!$('owner').value.trim()) return alert('Bitte Firmenname und Verantwortliche Person eintragen.');
- const obj={id:$('editId').value||Date.now().toString(),company:$('company').value.trim(),owner:$('owner').value.trim(),date:$('date').value,contact:$('contact').value.trim(),type:$('type').value,status:$('status').value,amount:Number($('amount').value||0),note:$('note').value.trim()};
- const i=sponsors.findIndex(x=>x.id===obj.id); if(i>=0)sponsors[i]=obj;else sponsors.unshift(obj); persist();stats();showSponsors();
+ const id=$('editId').value;
+ const payload={sponsor:$('company').value.trim(),verantwortlich:$('owner').value.trim(),kategorie:$('type').value,status:$('status').value,betrag:Number($('amount').value||0),beschreibung:packDetails($('note').value.trim(),$('date').value,$('contact').value.trim()),erstellt_von:$('owner').value.trim()};
+ let result;
+ if(id) result=await supabase.from(TABLE).update(payload).eq('id',id);
+ else result=await supabase.from(TABLE).insert(payload);
+ if(result.error){console.error(result.error);return alert('Speichern hat nicht geklappt: '+result.error.message);}
+ await loadSharedData(true); showSponsors();
 }
 function editSponsor(id){const x=sponsors.find(x=>x.id===id); if(!x)return; $('editId').value=x.id;$('company').value=x.company;$('owner').value=x.owner;$('date').value=x.date||'';$('contact').value=x.contact||'';$('type').value=x.type;$('status').value=x.status;$('amount').value=x.amount||'';$('note').value=x.note||'';$('formTitle').textContent='Sponsor bearbeiten';}
-function delSponsor(id){if(confirm('Eintrag wirklich löschen?')){sponsors=sponsors.filter(x=>x.id!==id);persist();stats();render();}}
+async function delSponsor(id){
+ if(!confirm('Eintrag wirklich löschen?')) return;
+ const {error}=await supabase.from(TABLE).delete().eq('id',id);
+ if(error){console.error(error);return alert('Löschen ist in Supabase noch nicht freigegeben.');}
+ await loadSharedData(true);
+}
 function render(){
  const q=$('search').value.toLowerCase(); const arr=sponsors.filter(x=>(x.company+' '+x.owner+' '+x.note).toLowerCase().includes(q));
  $('list').innerHTML=arr.length?arr.map(x=>`<div class="card sponsor"><div class="top"><div><h2>${esc(x.company)}</h2><div class="muted">👤 ${esc(x.owner)} · ${esc(x.type)}${x.date?' · '+x.date:''}</div></div><span class="badge">${esc(x.status)}</span></div>${x.note?`<p>${esc(x.note)}</p>`:''}<div class="money">${chf(x.amount)}</div><div class="actions"><button class="secondary" onclick="showForm('${x.id}')">Bearbeiten</button><button class="danger" onclick="delSponsor('${x.id}')">Löschen</button></div></div>`).join(''):'<div class="empty">Noch keine Sponsoren erfasst.</div>';
 }
-function addNeed(){if(!$('needName').value.trim())return alert('Bitte Bedarf eintragen.');needs.unshift({id:Date.now().toString(),name:$('needName').value.trim(),value:Number($('needValue').value||0),owner:$('needOwner').value.trim(),done:false});$('needName').value='';$('needValue').value='';$('needOwner').value='';persist();renderNeeds();}
-function toggleNeed(id){const x=needs.find(n=>n.id===id);x.done=!x.done;persist();renderNeeds();}
-function renderNeeds(){$('needs').innerHTML=needs.map(n=>`<div class="card sponsor"><div class="top"><div><h2>${esc(n.name)}</h2><div class="muted">${n.owner?'👤 '+esc(n.owner):'Noch nicht übernommen'} · ${chf(n.value)}</div></div><span class="badge">${n.done?'Sponsor gefunden':'Offen'}</span></div><button class="secondary" onclick="toggleNeed('${n.id}')">${n.done?'Wieder öffnen':'Als gefunden markieren'}</button></div>`).join('');}
-
-function sponsorTotals(){
-  return {
-    pledged:sponsors.filter(x=>['Zugesagt','Erhalten'].includes(x.status)).reduce((a,x)=>a+Number(x.amount||0),0),
-    received:sponsors.filter(x=>x.status==='Erhalten').reduce((a,x)=>a+Number(x.amount||0),0),
-    goods:sponsors.filter(x=>x.type==='Sachspende'&&['Zugesagt','Erhalten'].includes(x.status)).length,
-    open:sponsors.filter(x=>['Angefragt','In Abklärung'].includes(x.status)).length
-  };
+async function addNeed(){
+ if(!$('needName').value.trim())return alert('Bitte Bedarf eintragen.');
+ const payload={sponsor:$('needName').value.trim(),verantwortlich:$('needOwner').value.trim(),kategorie:'Bedarf',beschreibung:'',betrag:Number($('needValue').value||0),status:'Offen',erstellt_von:$('needOwner').value.trim()};
+ const {error}=await supabase.from(TABLE).insert(payload);
+ if(error){console.error(error);return alert('Bedarf konnte nicht gespeichert werden: '+error.message);}
+ $('needName').value='';$('needValue').value='';$('needOwner').value='';
+ await loadSharedData(true); renderNeeds();
 }
+async function toggleNeed(id){
+ const x=needs.find(n=>n.id===id); if(!x)return;
+ const {error}=await supabase.from(TABLE).update({status:x.done?'Offen':'Sponsor gefunden'}).eq('id',id);
+ if(error){console.error(error);return alert('Änderung konnte nicht gespeichert werden: '+error.message);}
+ await loadSharedData(true); renderNeeds();
+}
+function renderNeeds(){$('needs').innerHTML=needs.map(n=>`<div class="card sponsor"><div class="top"><div><h2>${esc(n.name)}</h2><div class="muted">${n.owner?'👤 '+esc(n.owner):'Noch nicht übernommen'} · ${chf(n.value)}</div></div><span class="badge">${n.done?'Sponsor gefunden':'Offen'}</span></div><button class="secondary" onclick="toggleNeed('${n.id}')">${n.done?'Wieder öffnen':'Als gefunden markieren'}</button></div>`).join('');}
+function sponsorTotals(){return {pledged:sponsors.filter(x=>['Zugesagt','Erhalten'].includes(x.status)).reduce((a,x)=>a+Number(x.amount||0),0),received:sponsors.filter(x=>x.status==='Erhalten').reduce((a,x)=>a+Number(x.amount||0),0),goods:sponsors.filter(x=>x.type==='Sachspende'&&['Zugesagt','Erhalten'].includes(x.status)).length,open:sponsors.filter(x=>['Angefragt','In Abklärung'].includes(x.status)).length};}
 function printSponsors(){
   const totals=sponsorTotals();
-  const rows=sponsors.map(x=>`<tr>
-    <td>${esc(x.company)}</td>
-    <td>${esc(x.owner)}</td>
-    <td>${esc(x.type)}</td>
-    <td>${esc(x.status)}</td>
-    <td>${chf(x.amount)}</td>
-    <td>${x.date?esc(x.date):''}</td>
-    <td>${esc(x.contact||'')}</td>
-    <td>${esc(x.note||'')}</td>
-  </tr>`).join('');
-  const w=window.open('','_blank');
-  if(!w) return alert('Bitte Pop-ups erlauben, damit die Druckansicht geöffnet werden kann.');
-  w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8">
-  <title>RG Stützpunkt Zürich – Sponsorenübersicht</title>
-  <style>
-  @page{size:A4 landscape;margin:12mm}
-  body{font-family:Arial,sans-serif;color:#152238;margin:0}
-  h1{font-size:22px;margin:0 0 4px} h2{font-size:15px;margin:0 0 16px;color:#607087}
-  table{width:100%;border-collapse:collapse;font-size:10px}
-  th,td{border:1px solid #cfd8e3;padding:6px;vertical-align:top;text-align:left}
-  th{background:#e7f1fb;color:#0755a5}
-  .totals{margin-top:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-  .box{border:1px solid #cfd8e3;border-radius:8px;padding:8px}
-  .box b{display:block;color:#0755a5;font-size:14px}
-  </style></head><body>
-  <h1>RG Stützpunkt Zürich – Sponsorenübersicht</h1>
-  <h2>Zürich Cup 2027</h2>
-  <table><thead><tr>
-    <th>Sponsor</th><th>Verantwortlich</th><th>Art</th><th>Status</th>
-    <th>Betrag</th><th>Datum</th><th>Kontakt</th><th>Bemerkung</th>
-  </tr></thead><tbody>${rows||'<tr><td colspan="8">Noch keine Sponsoren erfasst.</td></tr>'}</tbody></table>
-  <div class="totals">
-    <div class="box"><b>${chf(totals.pledged)}</b>Zugesagt</div>
-    <div class="box"><b>${chf(totals.received)}</b>Erhalten</div>
-    <div class="box"><b>${totals.goods}</b>Sachspenden</div>
-    <div class="box"><b>${totals.open}</b>Offene Anfragen</div>
-  </div>
-  <script>window.onload=()=>window.print();<\/script>
-  </body></html>`);
-  w.document.close();
+  const rows=sponsors.map(x=>`<tr><td>${esc(x.company)}</td><td>${esc(x.owner)}</td><td>${esc(x.type)}</td><td>${esc(x.status)}</td><td>${chf(x.amount)}</td><td>${x.date?esc(x.date):''}</td><td>${esc(x.contact||'')}</td><td>${esc(x.note||'')}</td></tr>`).join('');
+  const w=window.open('','_blank'); if(!w) return alert('Bitte Pop-ups erlauben, damit die Druckansicht geöffnet werden kann.');
+  w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><title>RG Stützpunkt Zürich – Sponsorenübersicht</title><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#152238;margin:0}h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 16px;color:#607087}table{width:100%;border-collapse:collapse;font-size:10px}th,td{border:1px solid #cfd8e3;padding:6px;vertical-align:top;text-align:left}th{background:#e7f1fb;color:#0755a5}.totals{margin-top:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.box{border:1px solid #cfd8e3;border-radius:8px;padding:8px}.box b{display:block;color:#0755a5;font-size:14px}</style></head><body><h1>RG Stützpunkt Zürich – Sponsorenübersicht</h1><h2>Zürich Cup 2027</h2><table><thead><tr><th>Sponsor</th><th>Verantwortlich</th><th>Art</th><th>Status</th><th>Betrag</th><th>Datum</th><th>Kontakt</th><th>Bemerkung</th></tr></thead><tbody>${rows||'<tr><td colspan="8">Noch keine Sponsoren erfasst.</td></tr>'}</tbody></table><div class="totals"><div class="box"><b>${chf(totals.pledged)}</b>Zugesagt</div><div class="box"><b>${chf(totals.received)}</b>Erhalten</div><div class="box"><b>${totals.goods}</b>Sachspenden</div><div class="box"><b>${totals.open}</b>Offene Anfragen</div></div><script>window.onload=()=>window.print();<\/script></body></html>`); w.document.close();
 }
 function exportExcel(){
-  const sep=';';
-  const headers=['Sponsor','Verantwortlich','Art','Status','Betrag CHF','Datum Anfrage','Kontaktperson','Bemerkung'];
-  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
-  const lines=[headers.map(q).join(sep)];
-  sponsors.forEach(x=>lines.push([
-    x.company,x.owner,x.type,x.status,Number(x.amount||0),x.date||'',x.contact||'',x.note||''
-  ].map(q).join(sep)));
-  const totals=sponsorTotals();
-  lines.push('');
-  lines.push([q('Total zugesagt'),q(totals.pledged)].join(sep));
-  lines.push([q('Total erhalten'),q(totals.received)].join(sep));
-  lines.push([q('Sachspenden'),q(totals.goods)].join(sep));
-  lines.push([q('Offene Anfragen'),q(totals.open)].join(sep));
-  const blob=new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;
-  a.download='RG_Stuetzpunkt_Zuerich_Sponsoren.csv';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const sep=';'; const headers=['Sponsor','Verantwortlich','Art','Status','Betrag CHF','Datum Anfrage','Kontaktperson','Bemerkung']; const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"'; const lines=[headers.map(q).join(sep)];
+  sponsors.forEach(x=>lines.push([x.company,x.owner,x.type,x.status,Number(x.amount||0),x.date||'',x.contact||'',x.note||''].map(q).join(sep)));
+  const totals=sponsorTotals(); lines.push(''); lines.push([q('Total zugesagt'),q(totals.pledged)].join(sep)); lines.push([q('Total erhalten'),q(totals.received)].join(sep)); lines.push([q('Sachspenden'),q(totals.goods)].join(sep)); lines.push([q('Offene Anfragen'),q(totals.open)].join(sep));
+  const blob=new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='RG_Stuetzpunkt_Zuerich_Sponsoren.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-
-function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
-stats();render();
+function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[m]));}
+async function startApp(){
+  stats();render();renderNeeds();
+  await migrateLocalIfDatabaseEmpty();
+  await loadSharedData(true);
+  setInterval(()=>loadSharedData(false),3000);
+}
+startApp();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </body>
 </html>
