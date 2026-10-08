@@ -106,7 +106,14 @@ function rowToSponsor(r){
   return {id:String(r.id),company:r.sponsor||'',owner:r.verantwortlich||'',date:d.date,contact:d.contact,type:r.kategorie||'Geldsponsoring',status:r.status||'Idee',amount:Number(r.betrag||0),note:d.note};
 }
 function rowToNeed(r){
-  return {id:String(r.id),name:r.sponsor||'',value:Number(r.betrag||0),owner:r.verantwortlich||'',done:r.status==='Sponsor gefunden'};
+  let takenBy='';
+  if(r.beschreibung){
+    try{
+      const d=JSON.parse(r.beschreibung);
+      if(d && typeof d==='object') takenBy=d.takenBy||'';
+    }catch(e){}
+  }
+  return {id:String(r.id),name:r.sponsor||'',value:Number(r.betrag||0),owner:r.verantwortlich||'',done:r.status==='Sponsor gefunden',takenBy};
 }
 async function apiFetch(url,options={}){
   const headers={
@@ -195,11 +202,31 @@ async function addNeed(){
 }
 async function toggleNeed(id){
  const x=needs.find(n=>n.id===id); if(!x)return;
- try{await apiFetch(REST+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({status:x.done?'Offen':'Sponsor gefunden'})});}
+ let payload;
+ if(x.done){
+   payload={status:'Offen',beschreibung:JSON.stringify({takenBy:''})};
+ }else{
+   const name=prompt('Wer übernimmt diesen Bedarf? Bitte Namen eintragen:',x.takenBy||'');
+   if(name===null) return;
+   if(!name.trim()) return alert('Bitte den Namen der Person eintragen, die den Bedarf übernimmt.');
+   payload={status:'Sponsor gefunden',beschreibung:JSON.stringify({takenBy:name.trim()})};
+ }
+ try{await apiFetch(REST+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(payload)});}
  catch(e){console.error(e);return alert('Änderung konnte nicht gespeichert werden: '+e.message);}
  await loadSharedData(true); renderNeeds();
 }
-function renderNeeds(){$('needs').innerHTML=needs.map(n=>`<div class="card sponsor"><div class="top"><div><h2>${esc(n.name)}</h2><div class="muted">${n.owner?'👤 '+esc(n.owner):'Noch nicht übernommen'} · ${chf(n.value)}</div></div><span class="badge">${n.done?'Sponsor gefunden':'Offen'}</span></div><button class="secondary" onclick="toggleNeed('${n.id}')">${n.done?'Wieder öffnen':'Als gefunden markieren'}</button></div>`).join('');}
+async function editNeedTakenBy(id){
+ const x=needs.find(n=>n.id===id); if(!x)return;
+ const name=prompt('Wer übernimmt diesen Bedarf?',x.takenBy||'');
+ if(name===null) return;
+ if(!name.trim()) return alert('Bitte einen Namen eintragen.');
+ try{await apiFetch(REST+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({beschreibung:JSON.stringify({takenBy:name.trim()})})});}
+ catch(e){console.error(e);return alert('Name konnte nicht gespeichert werden: '+e.message);}
+ await loadSharedData(true); renderNeeds();
+}
+function renderNeeds(){
+ $('needs').innerHTML=needs.map(n=>`<div class="card sponsor"><div class="top"><div><h2>${esc(n.name)}</h2><div class="muted">${n.owner?'👤 Verantwortlich: '+esc(n.owner):'Noch keine verantwortliche Person'} · ${chf(n.value)}</div>${n.done&&n.takenBy?`<div class="muted" style="margin-top:6px;font-weight:700;color:#0755a5">✅ Übernommen von: ${esc(n.takenBy)}</div>`:''}</div><span class="badge">${n.done?'Gefunden':'Offen'}</span></div><div class="actions"><button class="secondary" onclick="toggleNeed('${n.id}')">${n.done?'Wieder öffnen':'Als gefunden markieren'}</button>${n.done?`<button class="secondary" onclick="editNeedTakenBy('${n.id}')">Übernahme bearbeiten</button>`:''}</div></div>`).join('');
+}
 function sponsorTotals(){return {pledged:sponsors.filter(x=>['Zugesagt','Erhalten'].includes(x.status)).reduce((a,x)=>a+Number(x.amount||0),0),received:sponsors.filter(x=>x.status==='Erhalten').reduce((a,x)=>a+Number(x.amount||0),0),goods:sponsors.filter(x=>x.type==='Sachspende'&&['Zugesagt','Erhalten'].includes(x.status)).length,open:sponsors.filter(x=>['Angefragt','In Abklärung'].includes(x.status)).length};}
 function printSponsors(){
   const totals=sponsorTotals();
